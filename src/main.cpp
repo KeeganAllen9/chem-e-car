@@ -41,18 +41,37 @@ void serialPrint(const char *c) {
 
 // log structure -
 // first 2B are for current log length
-// every
+// every 2B after is a log, each consisting of a 2B number of milliseconds of wheel power time
 
 void createLog() {
+    uint16_t eeAddress;
+    EEPROM.get(0, eeAddress);
+    eeAddress += 2;
+    if (eeAddress >= EEPROM.length()) {
+        return;
+    }
 
+    EEPROM.put(eeAddress, brakingInitiationTime - activationTime);
+    EEPROM.put(0, eeAddress);
 }
 
-void clearLogs() {
-
+void resetLogs() {
+    for (uint16_t i = 0; i < EEPROM.length(); i++) {
+        EEPROM.update(i, 0);
+    }
 }
 
 void printLogs() {
+    if (!serialActive) {
+        return;
+    }
 
+    serialPrint("current log data -");
+    for (uint16_t eeAddress = 0; eeAddress < EEPROM.length(); eeAddress += 2) {
+        uint8_t data;
+        EEPROM.get(eeAddress, data);
+        Serial.println(data);
+    }
 }
 
 #pragma endregion
@@ -78,10 +97,13 @@ void deactivateCar() {
         return; // prevent accidental double presses
     }
 
+    if (!wheelPower) { // only create a log if the run was ended early
+        createLog();
+    }
+
     carActive = false;
     wheelPower = false;
     serialPrint("car deactivated");
-    createLog();
 }
 
 /// called when the iodine clock is triggered
@@ -93,8 +115,8 @@ void initiateBraking() {
     wheelPower = false;
     brakingInitiationTime = millis();
     serialPrint("braking activated");
-    serialPrint("total wheel power time:");
-    serialPrint(reinterpret_cast<const char *>(brakingInitiationTime - activationTime));
+    serialPrint("total wheel power time (s):");
+    serialPrint(reinterpret_cast<const char *>((brakingInitiationTime - activationTime) / 1000));
 }
 
 #pragma endregion
@@ -118,7 +140,6 @@ void loop() {
         serialActive = Serial.available();
         serialCount = 0;
     }
-
 
     // light sensor
     lightRollingSum += analogRead(0);
