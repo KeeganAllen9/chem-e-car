@@ -4,7 +4,7 @@
 // --- constants ---
 
 /// the amount of samples averaged (and therefore ticks) per evaluation of curLight
-constexpr unsigned int lightSampleCount = 200;
+constexpr unsigned int lightSampleCount = 250;
 /// when curLight goes below this value, power to the wheels will be turned off until reset
 constexpr unsigned int brakeActivationThreshold = 350;
 /// if EEPROM logging of clock timers is enabled
@@ -14,7 +14,7 @@ constexpr bool loggingEnabled = false;
 
 // --- global vars ---
 
-/// if car is in a state of being autonomous on the track, whether being powered or braking
+/// if car is currently in a run
 bool carActive = false;
 /// the time since initial startup at which the car was activated most recently
 unsigned long activationTime = 0;
@@ -28,6 +28,8 @@ unsigned int curLight = 0;
 unsigned long long lightRollingSum = 0;
 /// loop counter for averaging curLight
 unsigned int lightCount = 0;
+/// if we're printing curLight
+bool displayLight = false;
 /// if the serial port is connected and active
 bool isSerialConnected = false;
 /// if the serial was connected on the last tick. used to send an initial message if serial becomes connected while arduino is running
@@ -103,7 +105,7 @@ void printLogs() {
 
 /// called when the activation button is pushed
 void startRun() {
-    if (carActive && wheelPower) { // prevent accidental double presses
+    if (carActive) { // prevent accidental double presses
         return;
     }
 
@@ -130,14 +132,20 @@ void endRun() {
 
 /// called when the iodine clock is triggered
 void triggerClock() {
-    if (!wheelPower) {
+    if (!wheelPower) { // prevent accidental double presses
         return;
     }
 
     wheelPower = false;
     brakingInitiationTime = millis();
-    serialPrint("clock triggered. total wheel power time (s):");
-    serialPrint(reinterpret_cast<const char *>((brakingInitiationTime - activationTime) / 1000));
+
+    if (isSerialConnected) {
+        Serial.print(millis());
+        Serial.print(" - ");
+        Serial.print("clock triggered. ");
+        Serial.print(static_cast<float>(brakingInitiationTime - activationTime) / 1000);
+        Serial.println(R"( seconds of wheel power. press "e" to end the run)");
+    }
 }
 
 #pragma endregion
@@ -162,24 +170,26 @@ void setup() {
 
 void loop() {
     // serial
+    if (isSerialConnected && !hadSerialOnLastTick) {
+        serialPrint(R"(connected to serial port. press "s" to start a run, "c" to simulate the iodine clock triggering, "e" to end an active run, "z" to toggle displaying current detected light)");
+    }
     hadSerialOnLastTick = isSerialConnected;
     isSerialConnected = static_cast<bool>(Serial);
     // ReSharper disable once CppDFAConstantConditions
-    if (isSerialConnected) {
-        if (!hadSerialOnLastTick) {
-            serialPrint(R"(connected to serial port. press "s" to start a run, "c" to simulate the iodine clock triggering, "e" to end an active run)");
+    if (isSerialConnected && Serial.available()) {
+        const char serialIn = Serial.read();
+        if (serialIn == 's') {
+            startRun();
         }
-        if (Serial.available() > 0) {
-            const char serialIn = Serial.read();
-            if (serialIn == 's') {
-                startRun();
-            }
-            else if (serialIn == 'c') {
-                triggerClock();
-            }
-            else if (serialIn == 'e') {
-                endRun();
-            }
+        else if (serialIn == 'c') {
+            triggerClock();
+        }
+        else if (serialIn == 'e') {
+            endRun();
+        }
+        else if (serialIn == 'z') {
+            displayLight = !displayLight;
+            serialPrint(R"(press "z" to toggle displaying currently detected light, "s" to start a run, "c" to simulate the iodine clock triggering, "e" to end an active run)");
         }
     }
 
@@ -191,7 +201,12 @@ void loop() {
 
         curLight = lightRollingSum / lightSampleCount;
         lightRollingSum = 0;
-        Serial.println(curLight);
+        if (displayLight && isSerialConnected) {
+            Serial.print(millis());
+            Serial.print(" - ");
+            Serial.print("current light is ");
+            Serial.println(curLight);
+        }
 
         if (carActive && curLight < brakeActivationThreshold) {
             triggerClock();
