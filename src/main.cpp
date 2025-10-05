@@ -1,12 +1,18 @@
 ﻿#include <Arduino.h>
 #include <EEPROM.h>
 
+// --- constants ---
+
 /// the amount of samples averaged (and therefore ticks) per evaluation of curLight
-constexpr uint16_t lightSampleCount = 200;
+constexpr unsigned int lightSampleCount = 200;
 /// when curLight goes below this value, power to the wheels will be turned off until reset
-constexpr uint16_t brakeActivationThreshold = 350;
+constexpr unsigned int brakeActivationThreshold = 350;
+/// if EEPROM logging of clock timers is enabled
+constexpr bool loggingEnabled = false;
 
 
+
+// --- global vars ---
 
 /// if car is in a state of being autonomous on the track, whether being powered or braking
 bool carActive = false;
@@ -22,17 +28,19 @@ unsigned int curLight = 0;
 unsigned long long lightRollingSum = 0;
 /// loop counter for averaging curLight
 unsigned int lightCount = 0;
-/// loop counter for determining serial state changes
-unsigned int serialCount = 0;
-/// if the arduino is attached to an external device
-bool serialActive = false;
+/// if the serial port is connected and active
+bool isSerialConnected = false;
+/// if the serial was connected on the last tick. used to send an initial message if serial becomes connected while arduino is running
+bool hadSerialOnLastTick = false;
+
 
 
 #pragma region logging functions
 
 /// prints to serial log, if available
 void serialPrint(const char *c) {
-    if (serialActive) {
+    // ReSharper disable once CppDFAConstantConditions
+    if (isSerialConnected) {
         Serial.print(millis());
         Serial.print(" - ");
         Serial.println(c);
@@ -44,14 +52,19 @@ void serialPrint(const char *c) {
 // every 2B after is a log, each consisting of a 2B number of milliseconds of wheel power time
 
 void createLog() {
-    uint16_t eeAddress;
+    // ReSharper disable once CppDFAUnreachableCode
+    if (!loggingEnabled) {
+        return;
+    }
+    // ReSharper disable once CppDFAUnreachableCode
+    unsigned int eeAddress;
     EEPROM.get(0, eeAddress);
     eeAddress += 2;
     if (eeAddress >= EEPROM.length()) {
         return;
     }
 
-    EEPROM.put(eeAddress, brakingInitiationTime - activationTime);
+    EEPROM.put(eeAddress, brakingInitiationTime - activationTime); // NOLINT(*-narrowing-conversions)
     EEPROM.put(0, eeAddress);
 }
 
@@ -61,15 +74,24 @@ void resetLogs() {
     }
 }
 
+/// print EEPROM logs to the serial console
 void printLogs() {
-    if (!serialActive) {
+    // ReSharper disable once CppDFAConstantConditions
+    // ReSharper disable once CppDFAUnreachableCode
+    if (!isSerialConnected) {
         return;
     }
 
     serialPrint("current log data -");
-    for (uint16_t eeAddress = 0; eeAddress < EEPROM.length(); eeAddress += 2) {
+    unsigned int lastIndex;
+    EEPROM.get(0, lastIndex);
+    unsigned int logLength = lastIndex / 2;
+    for (unsigned int logNum = 0; logNum < logLength; logNum++) {
         uint8_t data;
-        EEPROM.get(eeAddress, data);
+        EEPROM.get(logNum * 2, data);
+        Serial.print("log #");
+        Serial.print(logNum);
+        Serial.print(" - ");
         Serial.println(data);
     }
 }
@@ -80,7 +102,7 @@ void printLogs() {
 #pragma region state changing functions
 
 /// called when the activation button is pushed
-void activateCar() {
+void startRun() {
     if (carActive && wheelPower) { // prevent accidental double presses
         return;
     }
@@ -88,34 +110,33 @@ void activateCar() {
     carActive = true;
     wheelPower = true;
     activationTime = millis();
-    serialPrint("car activated");
+    serialPrint(R"(car activated, beginning run. press "c" to simulate iodine clock triggering, or "e" to end the run)");
 }
 
 /// called when the deactivate button is pushed; ends run
-void deactivateCar() {
-    if (!carActive && !wheelPower) {
-        return; // prevent accidental double presses
+void endRun() {
+    if (!carActive && !wheelPower) { // prevent accidental double presses
+        return;
     }
 
-    if (!wheelPower) { // only create a log if the run was ended early
+    if (!wheelPower) { // only create a log if the run wasn't ended early
         createLog();
     }
 
     carActive = false;
     wheelPower = false;
-    serialPrint("car deactivated");
+    serialPrint("car deactivated, run concluded");
 }
 
 /// called when the iodine clock is triggered
-void initiateBraking() {
+void triggerClock() {
     if (!wheelPower) {
         return;
     }
 
     wheelPower = false;
     brakingInitiationTime = millis();
-    serialPrint("braking activated");
-    serialPrint("total wheel power time (s):");
+    serialPrint("clock triggered. total wheel power time (s):");
     serialPrint(reinterpret_cast<const char *>((brakingInitiationTime - activationTime) / 1000));
 }
 
@@ -124,21 +145,42 @@ void initiateBraking() {
 
 void setup() {
     Serial.begin(9600);
+    isSerialConnected = static_cast<bool>(Serial);
+    // ReSharper disable once CppDFAConstantConditions
+    if (isSerialConnected) {
+        serialPrint("initiating setup");
+    }
 
     // light sensor
     pinMode(13, OUTPUT);
     digitalWrite(13, HIGH);
 
-    // LED
-    pinMode(8, OUTPUT);
+    // light sensor LED
+    pinMode(12, OUTPUT);
+    digitalWrite(12, HIGH);
 }
 
 void loop() {
-    // evaluate serial
-    serialCount++;
-    if (serialCount == 10000) {
-        serialActive = Serial.available();
-        serialCount = 0;
+    // serial
+    hadSerialOnLastTick = isSerialConnected;
+    isSerialConnected = static_cast<bool>(Serial);
+    // ReSharper disable once CppDFAConstantConditions
+    if (isSerialConnected) {
+        if (!hadSerialOnLastTick) {
+            serialPrint(R"(connected to serial port. press "s" to start a run, "c" to simulate the iodine clock triggering, "e" to end an active run)");
+        }
+        if (Serial.available() > 0) {
+            const char serialIn = Serial.read();
+            if (serialIn == 's') {
+                startRun();
+            }
+            else if (serialIn == 'c') {
+                triggerClock();
+            }
+            else if (serialIn == 'e') {
+                endRun();
+            }
+        }
     }
 
     // light sensor
@@ -152,7 +194,7 @@ void loop() {
         Serial.println(curLight);
 
         if (carActive && curLight < brakeActivationThreshold) {
-            initiateBraking();
+            triggerClock();
         }
     }
 }
