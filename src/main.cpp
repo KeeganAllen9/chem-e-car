@@ -1,5 +1,5 @@
 ﻿#include <Arduino.h>
-#include <EEPROM.h>
+
 
 // --- constants ---
 
@@ -7,8 +7,6 @@
 constexpr unsigned int lightSampleCount = 250;
 /// when curLight goes below this value, power to the wheels will be turned off until reset
 constexpr unsigned int brakeActivationThreshold = 350;
-/// if EEPROM logging of clock timers is enabled
-constexpr bool loggingEnabled = false;
 
 
 
@@ -34,6 +32,10 @@ bool displayLight = false;
 bool isSerialConnected = false;
 /// if the serial was connected on the last tick. used to send an initial message if serial becomes connected while arduino is running
 bool hadSerialOnLastTick = false;
+/// current run timer logs
+unsigned long timeLogs[50] = {};
+/// current timer log count
+unsigned int timeLogNum = 0;
 
 
 
@@ -41,7 +43,6 @@ bool hadSerialOnLastTick = false;
 
 /// prints to serial log, if available
 void serialPrint(const char *c) {
-    // ReSharper disable once CppDFAConstantConditions
     if (isSerialConnected) {
         Serial.print(millis());
         Serial.print(" - ");
@@ -49,52 +50,30 @@ void serialPrint(const char *c) {
     }
 }
 
-// log structure -
-// first 2B are for current log length
-// every 2B after is a log, each consisting of a 2B number of milliseconds of wheel power time
-
 void createLog() {
-    // ReSharper disable once CppDFAUnreachableCode
-    if (!loggingEnabled) {
-        return;
-    }
-    // ReSharper disable once CppDFAUnreachableCode
-    unsigned int eeAddress;
-    EEPROM.get(0, eeAddress);
-    eeAddress += 2;
-    if (eeAddress >= EEPROM.length()) {
-        return;
-    }
-
-    EEPROM.put(eeAddress, brakingInitiationTime - activationTime); // NOLINT(*-narrowing-conversions)
-    EEPROM.put(0, eeAddress);
+    timeLogNum++;
+    timeLogs[timeLogNum] = brakingInitiationTime - activationTime;
 }
 
 void resetLogs() {
-    for (uint16_t i = 0; i < EEPROM.length(); i++) {
-        EEPROM.update(i, 0);
+    for (unsigned int i = 0; i < timeLogNum; i++) {
+        timeLogs[i] = 0;
     }
 }
 
-/// print EEPROM logs to the serial console
+/// print current logs to the serial console
 void printLogs() {
-    // ReSharper disable once CppDFAConstantConditions
-    // ReSharper disable once CppDFAUnreachableCode
     if (!isSerialConnected) {
         return;
     }
 
     serialPrint("current log data -");
-    unsigned int lastIndex;
-    EEPROM.get(0, lastIndex);
-    unsigned int logLength = lastIndex / 2;
-    for (unsigned int logNum = 0; logNum < logLength; logNum++) {
-        uint8_t data;
-        EEPROM.get(logNum * 2, data);
+    for (unsigned int i = 0; i < timeLogNum; i++) {
         Serial.print("log #");
-        Serial.print(logNum);
+        Serial.print(i + 1);
         Serial.print(" - ");
-        Serial.println(data);
+        Serial.print(static_cast<float>(timeLogs[i]) / 1000);
+        Serial.println("s");
     }
 }
 
